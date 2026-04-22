@@ -182,7 +182,7 @@ func (d *Decoder) decodeList() (List, error) {
 		return nil, err
 	}
 
-	var out List
+	out := make(List, 0)
 	for {
 		b, err := d.br.Peek(1)
 		if err != nil {
@@ -256,13 +256,15 @@ func (d *Decoder) Decode() (Value, error) {
 		return nil, err
 	}
 
-	if _, err := d.br.Peek(1); err != nil {
-		return nil, errors.New("bencode: trailing data after top-level value")
-	} else if !errors.Is(err, io.EOF) {
+	_, err = d.br.Peek(1)
+	if errors.Is(err, io.EOF) {
+		return v, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 
-	return v, nil
+	return nil, errors.New("bencode: trailing data after top-level value")
 }
 
 // Unmarshal is a convenience function that wraps byte data in a reader.
