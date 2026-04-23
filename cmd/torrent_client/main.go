@@ -4,7 +4,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/elliota43/gotorrent/torrent"
@@ -48,7 +50,7 @@ func main() {
 		if i >= 10 {
 			break
 		}
-		fmt.Printf("  [%d] %s:%d\n", i, p.IP.String(), p.Port)
+		fmt.Printf("  [%d] %s\n", i, net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port))))
 	}
 
 }
