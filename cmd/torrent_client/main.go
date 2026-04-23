@@ -63,6 +63,8 @@ func printTorrentMeta(meta *torrent.TorrentMeta) {
 	fmt.Printf("Piece Length: %d\n", meta.Info.PieceLength)
 	fmt.Printf("Piece Count: %d\n", meta.Info.PieceCount())
 	fmt.Printf("Total Length: %d bytes\n", meta.Info.TotalLength())
+	fmt.Printf("Last Piece Length: %d bytes\n", meta.Info.LastPieceLength())
+
 	fmt.Printf("Private: %v\n", meta.Info.Private == 1)
 
 	fmt.Printf("Info Hash: %x\n", meta.InfoHash)

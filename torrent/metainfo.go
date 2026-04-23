@@ -68,6 +68,15 @@ func (i InfoDictionary) TotalLength() int64 {
 	return total
 }
 
+func (i InfoDictionary) LastPieceLength() int64 {
+	last := i.TotalLength() % int64(i.PieceLength)
+	if last == 0 {
+		last = int64(i.PieceLength)
+	}
+
+	return last
+}
+
 func (i InfoDictionary) PieceCount() int {
 	return len(i.Pieces) / sha1.Size
 }
