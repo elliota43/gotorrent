@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/elliota43/gotorrent/bencode"
+	"github.com/elliota43/gotorrent/peer"
 	"github.com/elliota43/gotorrent/torrent"
 )
 
@@ -28,11 +29,6 @@ type Response struct {
 	Interval      int64  `bencode:"interval"`
 	Peers         any    `bencode:"peers"`
 	FailureReason string `bencode:"failure reason"`
-}
-
-type Peer struct {
-	IP   net.IP
-	Port uint16
 }
 
 const (
@@ -78,7 +74,7 @@ func (ar AnnounceRequest) GetURL(announceURL string) (string, error) {
 	return base.String(), nil
 }
 
-func (ar AnnounceRequest) RequestPeers(announceURL string) ([]Peer, error) {
+func (ar AnnounceRequest) RequestPeers(announceURL string) ([]peer.Peer, error) {
 
 	fullURL, err := ar.GetURL(announceURL)
 	if err != nil {
@@ -150,17 +146,17 @@ func escapeBytes(b []byte) string {
 	return sb.String()
 }
 
-func parseCompactPeers(b []byte) ([]Peer, error) {
+func parseCompactPeers(b []byte) ([]peer.Peer, error) {
 	if len(b)%6 != 0 {
 		return nil, fmt.Errorf("tracker: compact peers length %d is not a multiple of 6", len(b))
 	}
 
-	peers := make([]Peer, 0, len(b)/6)
+	peers := make([]peer.Peer, 0, len(b)/6)
 	for i := 0; i < len(b); i += 6 {
 		ip := net.IPv4(b[i], b[i+1], b[i+2], b[i+3])
 		port := uint16(b[i+4])<<8 | uint16(b[i+5])
 
-		peers = append(peers, Peer{
+		peers = append(peers, peer.Peer{
 			IP:   ip,
 			Port: port,
 		})
@@ -169,7 +165,7 @@ func parseCompactPeers(b []byte) ([]Peer, error) {
 	return peers, nil
 }
 
-func parsePeers(src any) ([]Peer, error) {
+func parsePeers(src any) ([]peer.Peer, error) {
 	switch peers := src.(type) {
 	case []byte:
 		return parseCompactPeers(peers)
@@ -182,8 +178,8 @@ func parsePeers(src any) ([]Peer, error) {
 	}
 }
 
-func parsePeerList(list bencode.List) ([]Peer, error) {
-	peers := make([]Peer, 0, len(list))
+func parsePeerList(list bencode.List) ([]peer.Peer, error) {
+	peers := make([]peer.Peer, 0, len(list))
 	for i, item := range list {
 		dict, ok := item.(bencode.Dict)
 		if !ok {
@@ -219,7 +215,7 @@ func parsePeerList(list bencode.List) ([]Peer, error) {
 			return nil, fmt.Errorf("tracker: peer list entry %d port %d out of range", i, port)
 		}
 
-		peers = append(peers, Peer{
+		peers = append(peers, peer.Peer{
 			IP:   ip,
 			Port: uint16(port),
 		})

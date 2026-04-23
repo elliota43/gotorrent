@@ -4,17 +4,22 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"net"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/elliota43/gotorrent/peer"
 	"github.com/elliota43/gotorrent/torrent"
 	"github.com/elliota43/gotorrent/tracker"
 )
 
-const peerID = "-GT0001-123456789012"
-const PORT = 6881
+type handshakeResult struct {
+	Index int
+	Peer  peer.Peer
+	ID    [20]byte
+	Err   error
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -46,13 +51,68 @@ func main() {
 
 	fmt.Printf("Received %d peers\n", len(peers))
 
-	for i, p := range peers {
-		if i >= 10 {
-			break
-		}
-		fmt.Printf("  [%d] %s\n", i, net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port))))
+	limit := min(25, len(peers))
+	results := make(chan handshakeResult, limit)
+
+	var wg sync.WaitGroup
+	for i, p := range peers[:limit] {
+		wg.Add(1)
+
+		go func(i int, p peer.Peer) {
+			defer wg.Done()
+
+			conn, err := p.DialTimeout(time.Second * 5)
+			if err != nil {
+				results <- handshakeResult{
+					Index: i,
+					Peer:  p,
+					Err:   fmt.Errorf("dial failed: %w", err),
+				}
+				return
+			}
+			defer conn.Close()
+
+			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+			hs, err := peer.CompleteHandshake(conn, meta.InfoHash, ar.PeerID)
+			if err != nil {
+				results <- handshakeResult{
+					Index: i,
+					Peer:  p,
+					Err:   fmt.Errorf("handshake failed: %w", err),
+				}
+				return
+			}
+
+			results <- handshakeResult{
+				Index: i,
+				Peer:  p,
+				ID:    hs.PeerID,
+				Err:   nil,
+			}
+		}(i, p)
 	}
 
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var successCount int
+	for res := range results {
+		if res.Err != nil {
+			fmt.Printf("[%02d] %s -> %v\n", res.Index, res.Peer.String(), res.Err)
+			continue
+		}
+
+		successCount++
+		fmt.Printf("[%02d] %s -> handshake ok, peer id = %q\n",
+			res.Index,
+			res.Peer.String(),
+			string(res.ID[:]),
+		)
+	}
+
+	fmt.Printf("successful handshakes: %d/%d\n", successCount, limit)
 }
 
 func printTorrentMeta(meta *torrent.TorrentMeta) {
