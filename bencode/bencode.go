@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -61,6 +63,198 @@ type List []Value
 type rawValue struct {
 	value Value
 	raw   []byte
+}
+
+func (e *Encoder) Encode(v any) error {
+	if err := e.encodeValue(reflect.ValueOf(v)); err != nil {
+		return err
+	}
+	return e.bw.Flush()
+}
+
+func (e *Encoder) encodeValue(v reflect.Value) error {
+	if !v.IsValid() {
+		return ErrUnsupportedType
+	}
+
+	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return fmt.Errorf("%w: nil %s", ErrUnsupportedType, v.Type())
+		}
+		v = v.Elem()
+	}
+
+	switch v.Kind() {
+	case reflect.String:
+		return e.encodeBytes([]byte(v.String()))
+
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return e.encodeBytes(v.Bytes())
+		}
+		return e.encodeSliceLike(v)
+
+	case reflect.Array:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			buf := make([]byte, v.Len())
+			reflect.Copy(reflect.ValueOf(buf), v)
+			return e.encodeBytes(buf)
+		}
+		return e.encodeSliceLike(v)
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return e.encodeInt(v.Int())
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		u := v.Uint()
+		if u > uint64(^uint64(0)>>1) {
+			return fmt.Errorf("%w: uint too large for bencode int: %d", ErrOverflow, u)
+		}
+		return e.encodeInt(int64(u))
+
+	case reflect.Bool:
+		if v.Bool() {
+			return e.encodeInt(1)
+		}
+		return e.encodeInt(0)
+
+	case reflect.Map:
+		return e.encodeMap(v)
+
+	case reflect.Struct:
+		return e.encodeStruct(v)
+
+	default:
+		return fmt.Errorf("%w: %s", ErrUnsupportedType, v.Type())
+	}
+}
+
+func (e *Encoder) encodeInt(n int64) error {
+	if err := e.writeByte('i'); err != nil {
+		return err
+	}
+
+	if _, err := e.writeString(strconv.FormatInt(n, 10)); err != nil {
+		return err
+	}
+
+	return e.writeByte('e')
+}
+
+func (e *Encoder) encodeBytes(b []byte) error {
+	if _, err := e.writeString(strconv.Itoa(len(b))); err != nil {
+		return err
+	}
+
+	if err := e.writeByte(':'); err != nil {
+		return err
+	}
+
+	_, err := e.bw.Write(b)
+	return err
+}
+
+func (e *Encoder) encodeSliceLike(v reflect.Value) error {
+	if err := e.writeByte('l'); err != nil {
+		return err
+	}
+
+	for i := 0; i < v.Len(); i++ {
+		if err := e.encodeValue(v.Index(i)); err != nil {
+			return err
+		}
+	}
+	return e.writeByte('e')
+}
+
+func (e *Encoder) encodeMap(v reflect.Value) error {
+	if v.Type().Key().Kind() != reflect.String {
+		return ErrMapKeyType
+	}
+
+	if err := e.writeByte('d'); err != nil {
+		return err
+	}
+
+	keys := v.MapKeys()
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].String() < keys[j].String()
+	})
+
+	for _, k := range keys {
+		if err := e.encodeBytes([]byte(k.String())); err != nil {
+			return err
+		}
+		if err := e.encodeValue(v.MapIndex(k)); err != nil {
+			return err
+		}
+	}
+
+	return e.writeByte('e')
+}
+
+func (e *Encoder) encodeStruct(v reflect.Value) error {
+	if err := e.writeByte('d'); err != nil {
+		return err
+	}
+
+	type fieldEntry struct {
+		key string
+		val reflect.Value
+	}
+
+	t := v.Type()
+	fields := make([]fieldEntry, 0, t.NumField())
+
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+
+		if sf.PkgPath != "" {
+			continue
+		}
+
+		name, opts := parseTag(sf.Tag.Get("bencode"))
+		if name == "-" {
+			continue
+		}
+		if opts["raw"] || opts["sha1"] {
+			continue
+		}
+
+		key := name
+		if key == "" {
+			key = lowerFirst(sf.Name)
+		}
+
+		fields = append(fields, fieldEntry{
+			key: key,
+			val: v.Field(i),
+		})
+	}
+
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].key < fields[j].key
+	})
+
+	for _, f := range fields {
+		if err := e.encodeBytes([]byte(f.key)); err != nil {
+			return err
+		}
+
+		if err := e.encodeValue(f.val); err != nil {
+			return fmt.Errorf("field %s: %w", f.key, err)
+		}
+	}
+
+	return e.writeByte('e')
+}
+
+func (e *Encoder) writeByte(b byte) error {
+	return e.bw.WriteByte(b)
+}
+
+func (e *Encoder) writeString(s string) (int, error) {
+	return e.bw.WriteString(s)
 }
 
 func (d *Decoder) decodeValue() (Value, error) {
