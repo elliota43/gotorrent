@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/elliota43/gotorrent/torrent"
 )
@@ -25,10 +27,66 @@ func main() {
 		log.Fatal(err)
 	}
 
+	printTorrentMeta(meta)
+}
+
+func printTorrentMeta(meta *torrent.TorrentMeta) {
 	fmt.Println("=== Torrent Metadata ===")
 	fmt.Printf("Announce: %s\n", meta.Announce)
+
+	if len(meta.AnnounceList) > 0 {
+		fmt.Println("Announce List:")
+		for i, tier := range meta.AnnounceList {
+			fmt.Printf("  Tier %d:\n", i)
+			for _, tracker := range tier {
+				fmt.Printf("    - %s\n", tracker)
+			}
+		}
+	}
+
+	if meta.Comment != "" {
+		fmt.Printf("Comment: %s\n", meta.Comment)
+	}
+	if meta.CreatedBy != "" {
+		fmt.Printf("Created By: %s\n", meta.CreatedBy)
+	}
+	if meta.CreationDate != 0 {
+		fmt.Printf("Creation Date: %d\n", meta.CreationDate)
+	}
+	if meta.Encoding != "" {
+		fmt.Printf("Encoding: %s\n", meta.Encoding)
+	}
+
+	fmt.Println()
+	fmt.Println("=== Info Dictionary ===")
 	fmt.Printf("Name: %s\n", meta.Info.Name)
 	fmt.Printf("Piece Length: %d\n", meta.Info.PieceLength)
-	fmt.Printf("Length: %d\n", meta.Info.Length)
-	fmt.Printf("Pieces raw length: %d\n", len(meta.Info.Pieces))
+	fmt.Printf("Piece Count: %d\n", meta.Info.PieceCount())
+	fmt.Printf("Total Length: %d bytes\n", meta.Info.TotalLength())
+	fmt.Printf("Private: %v\n", meta.Info.Private == 1)
+
+	if len(meta.Info.Pieces) > 0 {
+		fmt.Printf("Raw Pieces Field Length: %d bytes\n", len(meta.Info.Pieces))
+	}
+
+	hashes, err := meta.Info.PieceHashes()
+	if err != nil {
+		fmt.Printf("Piece Hash Parse Error: %v\n", err)
+	} else if len(hashes) > 0 {
+		fmt.Printf("First Piece Hash: %s\n", hex.EncodeToString(hashes[0][:]))
+	}
+
+	fmt.Println()
+
+	if meta.Info.IsSingleFile() {
+		fmt.Println("=== Mode: Single File ===")
+		fmt.Printf("Length: %d bytes\n", meta.Info.Length)
+		return
+	}
+
+	fmt.Println("=== Mode: Multi File ===")
+	fmt.Printf("Files: %d\n", len(meta.Info.Files))
+	for i, f := range meta.Info.Files {
+		fmt.Printf("  [%d] %s (%d bytes)\n", i, strings.Join(f.Path, "/"), f.Length)
+	}
 }

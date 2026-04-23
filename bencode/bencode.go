@@ -10,6 +10,23 @@ import (
 	"unicode"
 )
 
+var (
+	ErrSyntax         = errors.New("bencode: syntax error")
+	ErrInvalidInteger = errors.New("bencode: invalid integer")
+	ErrInvalidString  = errors.New("bencode: invalid byte string")
+	ErrTrailingData   = errors.New("bencode: trailing data after top-level value")
+
+	ErrNilDestination     = errors.New("bencode: nil destination")
+	ErrInvalidDestination = errors.New("bencode: destination must be a non-nil pointer")
+	ErrUnsettableValue    = errors.New("bencode: destination cannot be set")
+	ErrInvalidValue       = errors.New("bencode: invalid destination value")
+
+	ErrTypeMismatch    = errors.New("bencode: type mismatch")
+	ErrUnsupportedType = errors.New("bencode: unsupported destination type")
+	ErrMapKeyType      = errors.New("bencode: map key type must be string")
+	ErrOverflow        = errors.New("bencode: numeric overflow")
+)
+
 type Decoder struct {
 	br *bufio.Reader
 }
@@ -56,7 +73,7 @@ func (d *Decoder) decodeValue() (Value, error) {
 		if b[0] >= '0' && b[0] <= '9' {
 			return d.decodeBytes()
 		}
-		return nil, fmt.Errorf("bencode: unexpected byte %q", b[0])
+		return nil, fmt.Errorf("%w: unexpected byte %q", ErrSyntax, b[0])
 	}
 }
 
@@ -81,11 +98,11 @@ func (d *Decoder) decodeInt() (int64, error) {
 	}
 
 	if b == 'e' {
-		return 0, errors.New("bencode: empty integer")
+		return 0, fmt.Errorf("%w: empty integer", ErrInvalidInteger)
 	}
 
 	if b < '0' || b > '9' {
-		return 0, fmt.Errorf("bencode: invalid integer byte %q", b)
+		return 0, fmt.Errorf("%w: invalid integer byte %q", ErrInvalidInteger, b)
 	}
 
 	// leading zero not allowed
@@ -95,10 +112,10 @@ func (d *Decoder) decodeInt() (int64, error) {
 			return 0, err
 		}
 		if next != 'e' {
-			return 0, errors.New("bencode: leading zero in integer")
+			return 0, fmt.Errorf("%w: leading zero in integer", ErrInvalidInteger)
 		}
 		if sign == -1 {
-			return 0, errors.New("bencode: negative zero is invalid")
+			return 0, fmt.Errorf("%w: negative zero is invalid", ErrInvalidInteger)
 		}
 
 		return 0, nil
@@ -107,7 +124,7 @@ func (d *Decoder) decodeInt() (int64, error) {
 	var n int64
 	for {
 		if b < '0' || b > '9' {
-			return 0, fmt.Errorf("bencode: invalid integer byte %q", b)
+			return 0, fmt.Errorf("%w: invalid integer byte %q", ErrInvalidInteger, b)
 		}
 		n = n*10 + int64(b-'0')
 
@@ -144,7 +161,7 @@ func (d *Decoder) readStringLen() (int, error) {
 	}
 
 	if b < '0' || b > '9' {
-		return 0, fmt.Errorf("bencode: invalid string length start %q", b)
+		return 0, fmt.Errorf("%w: invalid string length start %q", ErrInvalidInteger, b)
 	}
 
 	if b == '0' {
@@ -154,7 +171,7 @@ func (d *Decoder) readStringLen() (int, error) {
 		}
 
 		if colon != ':' {
-			return 0, errors.New("bencode: expected ':' after string length")
+			return 0, fmt.Errorf("%w: expected ':' after string length", ErrInvalidString)
 		}
 		return 0, nil
 	}
@@ -170,7 +187,7 @@ func (d *Decoder) readStringLen() (int, error) {
 		}
 
 		if b < '0' || b > '9' {
-			return 0, fmt.Errorf("bencode: invalid string length byte %q", b)
+			return 0, fmt.Errorf("%w: invalid string length byte %q", ErrInvalidString, b)
 		}
 
 		n = n*10 + int(b-'0')
@@ -246,7 +263,7 @@ func expectByte(br *bufio.Reader, want byte) error {
 		return err
 	}
 	if got != want {
-		return fmt.Errorf("bencode: expected %q, got %q", want, got)
+		return fmt.Errorf("%w: expected %q, got %q", ErrSyntax, want, got)
 	}
 	return nil
 }
@@ -266,17 +283,17 @@ func (d *Decoder) Decode() (Value, error) {
 		return nil, err
 	}
 
-	return nil, errors.New("bencode: trailing data after top-level value")
+	return nil, ErrTrailingData
 }
 
 func (d *Decoder) DecodeInto(v any) error {
 	if v == nil {
-		return errors.New("bencode: nil destination")
+		return ErrNilDestination
 	}
 
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return errors.New("bencode: destination must be a non-nil pointer")
+		return ErrInvalidDestination
 	}
 
 	src, err := d.Decode()
@@ -289,11 +306,11 @@ func (d *Decoder) DecodeInto(v any) error {
 
 func assignValue(dst reflect.Value, src any) error {
 	if !dst.IsValid() {
-		return errors.New("bencode: invalid destination")
+		return ErrInvalidValue
 	}
 
 	if !dst.CanSet() {
-		return errors.New("bencode: destination cannot be set")
+		return ErrUnsettableValue
 	}
 
 	if dst.Kind() == reflect.Pointer {
@@ -311,7 +328,7 @@ func assignValue(dst reflect.Value, src any) error {
 	case reflect.String:
 		b, ok := src.([]byte)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		dst.SetString(string(b))
 		return nil
@@ -320,7 +337,7 @@ func assignValue(dst reflect.Value, src any) error {
 		if dst.Type().Elem().Kind() == reflect.Uint8 {
 			b, ok := src.([]byte)
 			if !ok {
-				return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+				return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 			}
 			dst.SetBytes(b)
 			return nil
@@ -328,13 +345,13 @@ func assignValue(dst reflect.Value, src any) error {
 
 		list, ok := src.(List)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 
 		out := reflect.MakeSlice(dst.Type(), len(list), len(list))
 		for i := range list {
 			if err := assignValue(out.Index(i), list[i]); err != nil {
-				return fmt.Errorf("bencode: slice index %d: %w", i, err)
+				return fmt.Errorf("slice index %d: %w", i, err)
 			}
 		}
 		dst.Set(out)
@@ -344,10 +361,10 @@ func assignValue(dst reflect.Value, src any) error {
 		if dst.Type().Elem().Kind() == reflect.Uint8 {
 			b, ok := src.([]byte)
 			if !ok {
-				return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+				return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 			}
 			if len(b) != dst.Len() {
-				return fmt.Errorf("bencode: byte array length mismatch: got %d want %d", len(b), dst.Len())
+				return fmt.Errorf("%w: byte array length mismatch: got %d want %d", ErrTypeMismatch, len(b), dst.Len())
 			}
 			reflect.Copy(dst, reflect.ValueOf(b))
 			return nil
@@ -355,14 +372,14 @@ func assignValue(dst reflect.Value, src any) error {
 
 		list, ok := src.(List)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		if len(list) != dst.Len() {
-			return fmt.Errorf("bencode: array length mismatch: got %d want %d", len(list), dst.Len())
+			return fmt.Errorf("%w: array length mismatch: got %d want %d", ErrTypeMismatch, len(list), dst.Len())
 		}
 		for i := range list {
 			if err := assignValue(dst.Index(i), list[i]); err != nil {
-				return fmt.Errorf("bencode: array index %d: %w", i, err)
+				return fmt.Errorf("array index %d: %w", i, err)
 			}
 		}
 		return nil
@@ -370,11 +387,11 @@ func assignValue(dst reflect.Value, src any) error {
 	case reflect.Map:
 		dict, ok := src.(Dict)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 
 		if dst.Type().Key().Kind() != reflect.String {
-			return errors.New("bencode: map key type must be string")
+			return ErrMapKeyType
 		}
 
 		if dst.IsNil() {
@@ -385,7 +402,7 @@ func assignValue(dst reflect.Value, src any) error {
 		for k, v := range dict {
 			elem := reflect.New(elemType).Elem()
 			if err := assignValue(elem, v); err != nil {
-				return fmt.Errorf("bencode: map key %q: %w", k, err)
+				return fmt.Errorf("map key %q: %w", k, err)
 			}
 			dst.SetMapIndex(reflect.ValueOf(k), elem)
 		}
@@ -394,17 +411,17 @@ func assignValue(dst reflect.Value, src any) error {
 	case reflect.Struct:
 		dict, ok := src.(Dict)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		return assignStruct(dst, dict)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, ok := src.(int64)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		if dst.OverflowInt(n) {
-			return fmt.Errorf("bencode: signed overflow assigning %d to %s", n, dst.Type())
+			return fmt.Errorf("%w: assigning %d to %s", ErrOverflow, n, dst.Type())
 		}
 		dst.SetInt(n)
 		return nil
@@ -412,13 +429,13 @@ func assignValue(dst reflect.Value, src any) error {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, ok := src.(int64)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		if n < 0 {
-			return fmt.Errorf("bencode: cannot assign negative integer %d to %s", n, dst.Type())
+			return fmt.Errorf("%w: cannot assign negative integer %d to %s", ErrTypeMismatch, n, dst.Type())
 		}
 		if dst.OverflowUint(uint64(n)) {
-			return fmt.Errorf("bencode: unsigned overflow assigning %d to %s", n, dst.Type())
+			return fmt.Errorf("%w: assigning %d to %s", ErrOverflow, n, dst.Type())
 		}
 		dst.SetUint(uint64(n))
 		return nil
@@ -426,12 +443,12 @@ func assignValue(dst reflect.Value, src any) error {
 	case reflect.Bool:
 		n, ok := src.(int64)
 		if !ok {
-			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			return fmt.Errorf("%w: cannot assign %T to %s", ErrTypeMismatch, src, dst.Type())
 		}
 		dst.SetBool(n != 0)
 		return nil
 	}
-	return fmt.Errorf("bencode: unsupported destination type %s", dst.Type())
+	return fmt.Errorf("%w: %s", ErrUnsupportedType, dst.Type())
 }
 
 func assignStruct(dst reflect.Value, dict Dict) error {
