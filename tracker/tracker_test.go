@@ -1,6 +1,8 @@
 package tracker
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -342,4 +344,118 @@ func TestTrackerResponse_UnmarshalNonCompactPeers(t *testing.T) {
 	if len(peers) != 2 {
 		t.Fatalf("got %d peers, want 2", len(peers))
 	}
+}
+
+func TestAnnounceRequest_RequestPeers_CompactResponse(t *testing.T) {
+	var infoHash [20]byte
+	var peerID [20]byte
+
+	copy(infoHash[:], []byte("12345678901234567890"))
+	copy(peerID[:], []byte("-GT0001-123456789012"))
+
+	ar := AnnounceRequest{
+		InfoHash:   infoHash,
+		PeerID:     peerID,
+		Port:       6881,
+		Uploaded:   0,
+		Downloaded: 0,
+		Left:       999,
+		Compact:    true,
+		Event:      "started",
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.RawQuery
+
+		if !strings.Contains(q, "port=6881") {
+			t.Fatalf("missing port in query: %q", q)
+		}
+		if !strings.Contains(q, "left=999") {
+			t.Fatalf("missing left in query: %q", q)
+		}
+
+		if !strings.Contains(q, "compact=1") {
+			t.Fatalf("missing compact in query: %q", q)
+		}
+
+		if !strings.Contains(q, "event=started") {
+			t.Fatalf("missing event in query: %q", q)
+		}
+
+		if !strings.Contains(q, "info_hash=") {
+			t.Fatalf("missing info_hash in query: %q", q)
+		}
+
+		if !strings.Contains(q, "peer_id=") {
+			t.Fatalf("missing peer_id in query: %q", q)
+		}
+
+		// peers:
+		// 1.2.3.4:6881
+		// 5.6.7.8:51413
+		resp := append([]byte("d8:intervali1800e5:peers12:"), []byte{
+			1, 2, 3, 4, 0x1A, 0xE1,
+			5, 6, 7, 8, 0xC8, 0xD5,
+		}...)
+		resp = append(resp, 'e')
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(resp)
+	}))
+
+	defer ts.Close()
+
+	peers, err := ar.RequestPeers(ts.URL)
+	if err != nil {
+		t.Fatalf("RequestPeers() error = %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
+	}
+	if !peers[0].IP.Equal(net.IPv4(1, 2, 3, 4)) {
+		t.Fatalf("peer 0 IP = %v", peers[0].IP)
+	}
+
+	if peers[0].Port != 6881 {
+		t.Fatalf("peer 0 port = %d, want 6881", peers[0].Port)
+	}
+
+	if !peers[1].IP.Equal(net.IPv4(5, 6, 7, 8)) {
+		t.Fatalf("peer 1 IP = %v", peers[1].IP)
+	}
+	if peers[1].Port != 51413 {
+		t.Fatalf("peer 1 port = %d, want 51413", peers[1].Port)
+	}
+}
+
+func TestAnnounceRequest_RequestPeers_FailureReason(t *testing.T) {
+	var infoHash [20]byte
+	var peerID [20]byte
+
+	copy(infoHash[:], []byte("12345678901234567890"))
+	copy(peerID[:], []byte("-GT0001-123456789012"))
+
+	ar := AnnounceRequest{
+		InfoHash: infoHash,
+		PeerID:   peerID,
+		Port:     6881,
+		Left:     999,
+		Compact:  true,
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("d14:failure reason11:bad trackere"))
+	}))
+	defer ts.Close()
+
+	_, err := ar.RequestPeers(ts.URL)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "bad tracker") {
+		t.Fatalf("error = %v, want bad tracker", err)
+	}
+
 }
