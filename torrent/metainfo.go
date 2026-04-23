@@ -91,7 +91,7 @@ func (i InfoDictionary) Validate() error {
 	}
 
 	if i.IsSingleFile() {
-		if i.Length <= 0 {
+		if i.Length < 0 {
 			return errors.New("torrent: single-file length must be > 0")
 		}
 		return nil

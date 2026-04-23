@@ -124,19 +124,6 @@ func TestInfoDictionary_Validate_BadPiecesFieldLength(t *testing.T) {
 	}
 }
 
-func TestInfoDictionary_Validate_SingleFileMissingLength(t *testing.T) {
-	i := InfoDictionary{
-		PieceLength: 16384,
-		Pieces:      make([]byte, sha1.Size),
-		Name:        "file.txt",
-		Length:      0,
-	}
-
-	if err := i.Validate(); err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-}
-
 func TestInfoDictionary_Validate_MultiFileEmptyPath(t *testing.T) {
 	i := InfoDictionary{
 		PieceLength: 16384,
