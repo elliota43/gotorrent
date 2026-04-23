@@ -2,10 +2,12 @@ package bencode
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
+	"unicode"
 )
 
 type Decoder struct {
@@ -267,7 +269,276 @@ func (d *Decoder) Decode() (Value, error) {
 	return nil, errors.New("bencode: trailing data after top-level value")
 }
 
-// Unmarshal is a convenience function that wraps byte data in a reader.
-func Unmarshal(data []byte) (Value, error) {
-	return NewDecoder(bytes.NewReader(data)).Decode()
+func (d *Decoder) DecodeInto(v any) error {
+	if v == nil {
+		return errors.New("bencode: nil destination")
+	}
+
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return errors.New("bencode: destination must be a non-nil pointer")
+	}
+
+	src, err := d.Decode()
+	if err != nil {
+		return err
+	}
+
+	return assignValue(rv.Elem(), src)
+}
+
+func assignValue(dst reflect.Value, src any) error {
+	if !dst.IsValid() {
+		return errors.New("bencode: invalid destination")
+	}
+
+	if !dst.CanSet() {
+		return errors.New("bencode: destination cannot be set")
+	}
+
+	if dst.Kind() == reflect.Pointer {
+		if dst.IsNil() {
+			dst.Set(reflect.New(dst.Type().Elem()))
+		}
+		return assignValue(dst.Elem(), src)
+	}
+
+	switch dst.Kind() {
+	case reflect.Interface:
+		dst.Set(reflect.ValueOf(src))
+		return nil
+
+	case reflect.String:
+		b, ok := src.([]byte)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		dst.SetString(string(b))
+		return nil
+
+	case reflect.Slice:
+		if dst.Type().Elem().Kind() == reflect.Uint8 {
+			b, ok := src.([]byte)
+			if !ok {
+				return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			}
+			dst.SetBytes(b)
+			return nil
+		}
+
+		list, ok := src.(List)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+
+		out := reflect.MakeSlice(dst.Type(), len(list), len(list))
+		for i := range list {
+			if err := assignValue(out.Index(i), list[i]); err != nil {
+				return fmt.Errorf("bencode: slice index %d: %w", i, err)
+			}
+		}
+		dst.Set(out)
+		return nil
+
+	case reflect.Array:
+		if dst.Type().Elem().Kind() == reflect.Uint8 {
+			b, ok := src.([]byte)
+			if !ok {
+				return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+			}
+			if len(b) != dst.Len() {
+				return fmt.Errorf("bencode: byte array length mismatch: got %d want %d", len(b), dst.Len())
+			}
+			reflect.Copy(dst, reflect.ValueOf(b))
+			return nil
+		}
+
+		list, ok := src.(List)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		if len(list) != dst.Len() {
+			return fmt.Errorf("bencode: array length mismatch: got %d want %d", len(list), dst.Len())
+		}
+		for i := range list {
+			if err := assignValue(dst.Index(i), list[i]); err != nil {
+				return fmt.Errorf("bencode: array index %d: %w", i, err)
+			}
+		}
+		return nil
+
+	case reflect.Map:
+		dict, ok := src.(Dict)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+
+		if dst.Type().Key().Kind() != reflect.String {
+			return errors.New("bencode: map key type must be string")
+		}
+
+		if dst.IsNil() {
+			dst.Set(reflect.MakeMap(dst.Type()))
+		}
+
+		elemType := dst.Type().Elem()
+		for k, v := range dict {
+			elem := reflect.New(elemType).Elem()
+			if err := assignValue(elem, v); err != nil {
+				return fmt.Errorf("bencode: map key %q: %w", k, err)
+			}
+			dst.SetMapIndex(reflect.ValueOf(k), elem)
+		}
+		return nil
+
+	case reflect.Struct:
+		dict, ok := src.(Dict)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		return assignStruct(dst, dict)
+
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, ok := src.(int64)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		if dst.OverflowInt(n) {
+			return fmt.Errorf("bencode: signed overflow assigning %d to %s", n, dst.Type())
+		}
+		dst.SetInt(n)
+		return nil
+
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, ok := src.(int64)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		if n < 0 {
+			return fmt.Errorf("bencode: cannot assign negative integer %d to %s", n, dst.Type())
+		}
+		if dst.OverflowUint(uint64(n)) {
+			return fmt.Errorf("bencode: unsigned overflow assigning %d to %s", n, dst.Type())
+		}
+		dst.SetUint(uint64(n))
+		return nil
+
+	case reflect.Bool:
+		n, ok := src.(int64)
+		if !ok {
+			return fmt.Errorf("bencode: cannot assign %T to %s", src, dst.Type())
+		}
+		dst.SetBool(n != 0)
+		return nil
+	}
+	return fmt.Errorf("bencode: unsupported destination type %s", dst.Type())
+}
+
+func assignStruct(dst reflect.Value, dict Dict) error {
+	t := dst.Type()
+
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+
+		// skip unexported fields
+		if sf.PkgPath != "" {
+			continue
+		}
+
+		tag := sf.Tag.Get("bencode")
+		switch tag {
+		case "-":
+			continue
+		}
+
+		src, ok := lookupStructFieldValue(dict, sf, tag)
+		if !ok {
+			continue
+		}
+
+		if err := assignValue(dst.Field(i), src); err != nil {
+			return fmt.Errorf("field %s: %w", sf.Name, err)
+		}
+	}
+	return nil
+}
+
+func lookupStructFieldValue(dict Dict, sf reflect.StructField, tag string) (any, bool) {
+	if tag != "" {
+		src, ok := dict[tag]
+		return src, ok
+	}
+
+	for _, candidate := range fieldNameCandidates(sf.Name) {
+		if src, ok := dict[candidate]; ok {
+			return src, true
+		}
+	}
+
+	return nil, false
+}
+
+func fieldNameCandidates(name string) []string {
+	words := splitFieldName(name)
+	candidates := []string{
+		name,
+		lowerFirst(name),
+		strings.Join(words, " "),
+		strings.Join(words, "-"),
+		strings.Join(words, "_"),
+		strings.Join(words, ""),
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+
+	return out
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+
+	runes := []rune(s)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
+}
+
+func splitFieldName(name string) []string {
+	if name == "" {
+		return nil
+	}
+
+	runes := []rune(name)
+	start := 0
+	words := make([]string, 0, len(runes))
+
+	for i := 1; i < len(runes); i++ {
+		curr := runes[i]
+		prev := runes[i-1]
+
+		if !unicode.IsUpper(curr) {
+			continue
+		}
+
+		nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
+		if unicode.IsLower(prev) || nextIsLower {
+			words = append(words, strings.ToLower(string(runes[start:i])))
+			start = i
+		}
+	}
+
+	words = append(words, strings.ToLower(string(runes[start:])))
+	return words
 }

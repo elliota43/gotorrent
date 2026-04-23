@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
-	"strings"
 
-	"github.com/elliota43/gotorrent/bencode"
+	"github.com/elliota43/gotorrent/torrent"
 )
 
 func main() {
@@ -22,47 +20,15 @@ func main() {
 
 	defer f.Close()
 
-	dec := bencode.NewDecoder(f)
-	v, err := dec.Decode()
+	meta, err := torrent.Open(f)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	printValue(v, 0)
-}
-
-func printValue(v any, indent int) {
-	pad := strings.Repeat(" ", indent)
-
-	switch x := v.(type) {
-	case int64:
-		fmt.Printf("%sint: %d\n", pad, x)
-
-	case []byte:
-		fmt.Printf("%sbytes: %q\n", pad, string(x))
-
-	case bencode.List:
-		fmt.Printf("%slist[%d]:\n", pad, len(x))
-		for i, item := range x {
-			fmt.Printf("%s  [%d]\n", pad, i)
-			printValue(item, indent+2)
-		}
-
-	case bencode.Dict:
-		fmt.Printf("%sdict[%d]:\n", pad, len(x))
-
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		for _, k := range keys {
-			fmt.Printf("%s  %q:\n", pad, k)
-			printValue(x[k], indent+2)
-		}
-
-	default:
-		fmt.Printf("%sunknown %T: %#v\n", pad, v, v)
-	}
+	fmt.Println("=== Torrent Metadata ===")
+	fmt.Printf("Announce: %s\n", meta.Announce)
+	fmt.Printf("Name: %s\n", meta.Info.Name)
+	fmt.Printf("Piece Length: %d\n", meta.Info.PieceLength)
+	fmt.Printf("Length: %d\n", meta.Info.Length)
+	fmt.Printf("Pieces raw length: %d\n", len(meta.Info.Pieces))
 }
