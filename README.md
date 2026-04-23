@@ -9,11 +9,15 @@ This is my attempt at creating a simple torrent client in Go.
 - [x] Bencode Decoding/Encoding
 - [x] Torrent File Parse/Extract to struct
 - [x] Calculate Info Hash
+- [x] Request Peers from Tracker & Parse Peer List Response
 
 **In Progress/Next Steps**:
 
-- [ ] Tracker connection
-- [ ] Peer messaging protocol/struct definitions
+- [ ] Peer Connection
+- [ ] Torrent Download
+- [ ] Torrent Upload
+- [ ] Torrent File Creation
+
 
 ## Usage
 
