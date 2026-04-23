@@ -125,3 +125,79 @@ func (i InfoDictionary) PieceHashes() ([][sha1.Size]byte, error) {
 
 	return out, nil
 }
+
+func (i InfoDictionary) PieceLengthAt(idx int) (int64, error) {
+	count := i.PieceCount()
+	if idx < 0 || idx >= count {
+		return 0, fmt.Errorf("torrent: piece index %d out of range [0, %d)", idx, count)
+	}
+
+	if idx == count-1 {
+		return i.LastPieceLength(), nil
+	}
+	return int64(i.PieceLength), nil
+}
+
+func (i InfoDictionary) PieceBounds(index int) (begin int64, end int64, err error) {
+	length, err := i.PieceLengthAt(index)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	begin = int64(index) * int64(i.PieceLength)
+	end = begin + length
+	return begin, end, nil
+}
+
+func (i InfoDictionary) PieceHash(index int) ([sha1.Size]byte, error) {
+	var out [sha1.Size]byte
+
+	count := i.PieceCount()
+	if index < 0 || index >= count {
+		return out, fmt.Errorf("torrent: piece index %d out of rangeg [0, %d)", index, count)
+	}
+
+	start := index * sha1.Size
+	end := start + sha1.Size
+	copy(out[:], i.Pieces[start:end])
+	return out, nil
+}
+
+func (m *TorrentMeta) TotalLength() int64 {
+	return m.Info.TotalLength()
+}
+
+func (m *TorrentMeta) PieceCount() int {
+	return m.Info.PieceCount()
+}
+
+func (m *TorrentMeta) LastPieceLength() int64 {
+	return m.Info.LastPieceLength()
+}
+
+func (m *TorrentMeta) IsPrivate() bool {
+	return m.Info.Private == 1
+}
+
+func (m *TorrentMeta) DisplayName() string {
+	return m.Info.Name
+}
+
+func (m *TorrentMeta) FileCount() int {
+	if m.Info.IsSingleFile() {
+		return 1
+	}
+	return len(m.Info.Files)
+}
+
+func (m *TorrentMeta) Files() []FileInfo {
+	if m.Info.IsSingleFile() {
+		return []FileInfo{
+			{
+				Length: m.Info.Length,
+				Path:   []string{m.Info.Name},
+			},
+		}
+	}
+	return m.Info.Files
+}
