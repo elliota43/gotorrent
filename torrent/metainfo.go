@@ -17,6 +17,8 @@ type TorrentMeta struct {
 	CreationDate int64          `bencode:"creation date"`
 	Encoding     string         `bencode:"encoding"`
 	Info         InfoDictionary `bencode:"info"`
+	InfoBytes    []byte         `bencode:"info,raw"`
+	InfoHash     [20]byte       `bencode:"info,sha1"`
 }
 
 type InfoDictionary struct {
@@ -100,7 +102,7 @@ func (i InfoDictionary) Validate() error {
 
 func (i InfoDictionary) PieceHashes() ([][sha1.Size]byte, error) {
 	if len(i.Pieces)%sha1.Size != 0 {
-		return nil, fmt.Errorf("torrent: piece length %d is not a multiple of %d", len(i.Pieces), sha1.Size)
+		return nil, fmt.Errorf("torrent: pieces length %d is not a multiple of %d", len(i.Pieces), sha1.Size)
 	}
 
 	count := len(i.Pieces) / sha1.Size

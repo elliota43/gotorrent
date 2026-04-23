@@ -194,17 +194,19 @@ func TestInfoDictionary_PieceHashes_BadLength(t *testing.T) {
 
 func TestOpen_SingleFileTorrent(t *testing.T) {
 	pieces := strings.Repeat("a", sha1.Size)
-
-	input := "" +
-		"d" +
-		"8:announce" + "14:http://tracker" +
-		"4:info" +
+	rawInfo := "" +
 		"d" +
 		"6:length" + "i123e" +
 		"4:name" + "8:file.txt" +
 		"12:piece length" + "i16384e" +
 		"6:pieces" + "20:" + pieces +
-		"e" +
+		"e"
+
+	input := "" +
+		"d" +
+		"8:announce" + "14:http://tracker" +
+		"4:info" +
+		rawInfo +
 		"e"
 
 	meta, err := Open(strings.NewReader(input))
@@ -232,15 +234,20 @@ func TestOpen_SingleFileTorrent(t *testing.T) {
 	if !meta.Info.IsSingleFile() {
 		t.Fatalf("expected single-file torrent")
 	}
+
+	if string(meta.InfoBytes) != rawInfo {
+		t.Fatalf("raw info: got %q want %q", string(meta.InfoBytes), rawInfo)
+	}
+
+	wantHash := sha1.Sum([]byte(rawInfo))
+	if meta.InfoHash != wantHash {
+		t.Fatalf("info hash: got %x want %x", meta.InfoHash, wantHash)
+	}
 }
 
 func TestOpen_MultiFileTorrent(t *testing.T) {
 	pieces := strings.Repeat("b", sha1.Size)
-
-	input := "" +
-		"d" +
-		"8:announce" + "14:http://tracker" +
-		"4:info" +
+	rawInfo := "" +
 		"d" +
 		"4:name" + "6:mydir!" +
 		"12:piece length" + "i16384e" +
@@ -256,7 +263,13 @@ func TestOpen_MultiFileTorrent(t *testing.T) {
 		"4:path" + "l" + "3:dir" + "5:b.txte" +
 		"e" +
 		"e" +
-		"e" +
+		"e"
+
+	input := "" +
+		"d" +
+		"8:announce" + "14:http://tracker" +
+		"4:info" +
+		rawInfo +
 		"e"
 
 	meta, err := Open(strings.NewReader(input))
@@ -289,6 +302,15 @@ func TestOpen_MultiFileTorrent(t *testing.T) {
 	}
 	if len(meta.Info.Files[1].Path) != 2 || meta.Info.Files[1].Path[0] != "dir" || meta.Info.Files[1].Path[1] != "b.txt" {
 		t.Fatalf("file 1 path: got %#v", meta.Info.Files[1].Path)
+	}
+
+	if string(meta.InfoBytes) != rawInfo {
+		t.Fatalf("raw info: got %q want %q", string(meta.InfoBytes), rawInfo)
+	}
+
+	wantHash := sha1.Sum([]byte(rawInfo))
+	if meta.InfoHash != wantHash {
+		t.Fatalf("info hash: got %x want %x", meta.InfoHash, wantHash)
 	}
 }
 

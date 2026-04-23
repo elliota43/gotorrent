@@ -2,6 +2,7 @@ package bencode
 
 import (
 	"bufio"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +29,8 @@ var (
 )
 
 type Decoder struct {
-	br *bufio.Reader
+	br  *bufio.Reader
+	raw []byte
 }
 
 type Encoder struct {
@@ -37,7 +39,7 @@ type Encoder struct {
 
 func NewDecoder(r io.Reader) *Decoder {
 	if br, ok := r.(*bufio.Reader); ok {
-		return &Decoder{br}
+		return &Decoder{br: br}
 	}
 
 	return &Decoder{br: bufio.NewReader(r)}
@@ -56,42 +58,56 @@ type Value interface{}
 type Dict map[string]Value
 type List []Value
 
+type rawValue struct {
+	value Value
+	raw   []byte
+}
+
 func (d *Decoder) decodeValue() (Value, error) {
+	start := len(d.raw)
+
 	b, err := d.br.Peek(1)
 	if err != nil {
 		return nil, err
 	}
 
+	var v Value
 	switch b[0] {
 	case 'i':
-		return d.decodeInt()
+		v, err = d.decodeInt()
 	case 'l':
-		return d.decodeList()
+		v, err = d.decodeList()
 	case 'd':
-		return d.decodeDict()
+		v, err = d.decodeDict()
 	default:
 		if b[0] >= '0' && b[0] <= '9' {
-			return d.decodeBytes()
+			v, err = d.decodeBytes()
+			break
 		}
 		return nil, fmt.Errorf("%w: unexpected byte %q", ErrSyntax, b[0])
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	return rawValue{value: v, raw: d.raw[start:len(d.raw)]}, nil
 }
 
 func (d *Decoder) decodeInt() (int64, error) {
 	// consume 'i'
-	if err := expectByte(d.br, 'i'); err != nil {
+	if err := d.expectByte('i'); err != nil {
 		return 0, err
 	}
 
 	sign := int64(1)
-	b, err := d.br.ReadByte()
+	b, err := d.readByte()
 	if err != nil {
 		return 0, err
 	}
 
 	if b == '-' {
 		sign = -1
-		b, err = d.br.ReadByte()
+		b, err = d.readByte()
 		if err != nil {
 			return 0, err
 		}
@@ -107,7 +123,7 @@ func (d *Decoder) decodeInt() (int64, error) {
 
 	// leading zero not allowed
 	if b == '0' {
-		next, err := d.br.ReadByte()
+		next, err := d.readByte()
 		if err != nil {
 			return 0, err
 		}
@@ -128,7 +144,7 @@ func (d *Decoder) decodeInt() (int64, error) {
 		}
 		n = n*10 + int64(b-'0')
 
-		b, err = d.br.ReadByte()
+		b, err = d.readByte()
 		if err != nil {
 			return 0, err
 		}
@@ -148,14 +164,14 @@ func (d *Decoder) decodeBytes() ([]byte, error) {
 	}
 
 	buf := make([]byte, n)
-	if _, err := io.ReadFull(d.br, buf); err != nil {
+	if err := d.readFull(buf); err != nil {
 		return nil, err
 	}
 	return buf, nil
 }
 
 func (d *Decoder) readStringLen() (int, error) {
-	b, err := d.br.ReadByte()
+	b, err := d.readByte()
 	if err != nil {
 		return 0, err
 	}
@@ -165,7 +181,7 @@ func (d *Decoder) readStringLen() (int, error) {
 	}
 
 	if b == '0' {
-		colon, err := d.br.ReadByte()
+		colon, err := d.readByte()
 		if err != nil {
 			return 0, err
 		}
@@ -178,7 +194,7 @@ func (d *Decoder) readStringLen() (int, error) {
 
 	n := int(b - '0')
 	for {
-		b, err := d.br.ReadByte()
+		b, err := d.readByte()
 		if err != nil {
 			return 0, err
 		}
@@ -197,7 +213,7 @@ func (d *Decoder) readStringLen() (int, error) {
 }
 
 func (d *Decoder) decodeList() (List, error) {
-	if err := expectByte(d.br, 'l'); err != nil {
+	if err := d.expectByte('l'); err != nil {
 		return nil, err
 	}
 
@@ -209,7 +225,7 @@ func (d *Decoder) decodeList() (List, error) {
 		}
 
 		if b[0] == 'e' {
-			_, _ = d.br.ReadByte()
+			_, _ = d.readByte()
 			break
 		}
 
@@ -224,7 +240,7 @@ func (d *Decoder) decodeList() (List, error) {
 }
 
 func (d *Decoder) decodeDict() (Dict, error) {
-	if err := expectByte(d.br, 'd'); err != nil {
+	if err := d.expectByte('d'); err != nil {
 		return nil, err
 	}
 
@@ -236,7 +252,7 @@ func (d *Decoder) decodeDict() (Dict, error) {
 		}
 
 		if b[0] == 'e' {
-			_, _ = d.br.ReadByte()
+			_, _ = d.readByte()
 			break
 		}
 
@@ -257,8 +273,26 @@ func (d *Decoder) decodeDict() (Dict, error) {
 	return out, nil
 }
 
-func expectByte(br *bufio.Reader, want byte) error {
-	got, err := br.ReadByte()
+func (d *Decoder) readByte() (byte, error) {
+	b, err := d.br.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+
+	d.raw = append(d.raw, b)
+	return b, nil
+}
+
+func (d *Decoder) readFull(buf []byte) error {
+	n, err := io.ReadFull(d.br, buf)
+	if n > 0 {
+		d.raw = append(d.raw, buf[:n]...)
+	}
+	return err
+}
+
+func (d *Decoder) expectByte(want byte) error {
+	got, err := d.readByte()
 	if err != nil {
 		return err
 	}
@@ -275,15 +309,11 @@ func (d *Decoder) Decode() (Value, error) {
 		return nil, err
 	}
 
-	_, err = d.br.Peek(1)
-	if errors.Is(err, io.EOF) {
-		return v, nil
-	}
-	if err != nil {
+	if err := d.checkTrailing(); err != nil {
 		return nil, err
 	}
 
-	return nil, ErrTrailingData
+	return unwrapRawValue(v), nil
 }
 
 func (d *Decoder) DecodeInto(v any) error {
@@ -296,12 +326,51 @@ func (d *Decoder) DecodeInto(v any) error {
 		return ErrInvalidDestination
 	}
 
-	src, err := d.Decode()
+	src, err := d.decodeValue()
 	if err != nil {
+		return err
+	}
+	if err := d.checkTrailing(); err != nil {
 		return err
 	}
 
 	return assignValue(rv.Elem(), src)
+}
+
+func (d *Decoder) checkTrailing() error {
+	_, err := d.br.Peek(1)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return ErrTrailingData
+}
+
+func unwrapRawValue(src any) any {
+	rv, ok := src.(rawValue)
+	if ok {
+		src = rv.value
+	}
+
+	switch v := src.(type) {
+	case Dict:
+		out := make(Dict, len(v))
+		for key, val := range v {
+			out[key] = unwrapRawValue(val)
+		}
+		return out
+	case List:
+		out := make(List, len(v))
+		for i, val := range v {
+			out[i] = unwrapRawValue(val)
+		}
+		return out
+	default:
+		return src
+	}
 }
 
 func assignValue(dst reflect.Value, src any) error {
@@ -320,9 +389,13 @@ func assignValue(dst reflect.Value, src any) error {
 		return assignValue(dst.Elem(), src)
 	}
 
+	if rv, ok := src.(rawValue); ok {
+		src = rv.value
+	}
+
 	switch dst.Kind() {
 	case reflect.Interface:
-		dst.Set(reflect.ValueOf(src))
+		dst.Set(reflect.ValueOf(unwrapRawValue(src)))
 		return nil
 
 	case reflect.String:
@@ -462,22 +535,103 @@ func assignStruct(dst reflect.Value, dict Dict) error {
 			continue
 		}
 
-		tag := sf.Tag.Get("bencode")
-		switch tag {
-		case "-":
+		name, opts := parseTag(sf.Tag.Get("bencode"))
+		if name == "-" {
 			continue
 		}
 
-		src, ok := lookupStructFieldValue(dict, sf, tag)
+		src, ok := lookupStructFieldValue(dict, sf, name)
 		if !ok {
 			continue
 		}
 
-		if err := assignValue(dst.Field(i), src); err != nil {
+		var err error
+		switch {
+		case opts["raw"]:
+			err = assignRawBytes(dst.Field(i), src)
+		case opts["sha1"]:
+			err = assignSHA1(dst.Field(i), src)
+		default:
+			err = assignValue(dst.Field(i), src)
+		}
+		if err != nil {
 			return fmt.Errorf("field %s: %w", sf.Name, err)
 		}
 	}
 	return nil
+}
+
+func parseTag(tag string) (string, map[string]bool) {
+	if tag == "" {
+		return "", nil
+	}
+
+	parts := strings.Split(tag, ",")
+	name := parts[0]
+	opts := make(map[string]bool, len(parts)-1)
+	for _, opt := range parts[1:] {
+		if opt != "" {
+			opts[opt] = true
+		}
+	}
+
+	return name, opts
+}
+
+func assignRawBytes(dst reflect.Value, src any) error {
+	rv, ok := src.(rawValue)
+	if !ok {
+		return fmt.Errorf("%w: raw bytes unavailable for %T", ErrTypeMismatch, src)
+	}
+
+	return assignBytes(dst, rv.raw)
+}
+
+func assignSHA1(dst reflect.Value, src any) error {
+	rv, ok := src.(rawValue)
+	if !ok {
+		return fmt.Errorf("%w: raw bytes unavailable for %T", ErrTypeMismatch, src)
+	}
+
+	sum := sha1.Sum(rv.raw)
+	return assignBytes(dst, sum[:])
+}
+
+func assignBytes(dst reflect.Value, b []byte) error {
+	if !dst.IsValid() {
+		return ErrInvalidValue
+	}
+
+	if !dst.CanSet() {
+		return ErrUnsettableValue
+	}
+
+	if dst.Kind() == reflect.Pointer {
+		if dst.IsNil() {
+			dst.Set(reflect.New(dst.Type().Elem()))
+		}
+		return assignBytes(dst.Elem(), b)
+	}
+
+	switch dst.Kind() {
+	case reflect.Slice:
+		if dst.Type().Elem().Kind() != reflect.Uint8 {
+			return fmt.Errorf("%w: cannot assign raw bytes to %s", ErrTypeMismatch, dst.Type())
+		}
+		dst.SetBytes(append([]byte(nil), b...))
+		return nil
+	case reflect.Array:
+		if dst.Type().Elem().Kind() != reflect.Uint8 {
+			return fmt.Errorf("%w: cannot assign raw bytes to %s", ErrTypeMismatch, dst.Type())
+		}
+		if len(b) != dst.Len() {
+			return fmt.Errorf("%w: byte array length mismatch: got %d want %d", ErrTypeMismatch, len(b), dst.Len())
+		}
+		reflect.Copy(dst, reflect.ValueOf(b))
+		return nil
+	}
+
+	return fmt.Errorf("%w: cannot assign raw bytes to %s", ErrUnsupportedType, dst.Type())
 }
 
 func lookupStructFieldValue(dict Dict, sf reflect.StructField, tag string) (any, bool) {

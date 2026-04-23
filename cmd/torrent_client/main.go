@@ -37,7 +37,7 @@ func printTorrentMeta(meta *torrent.TorrentMeta) {
 	if len(meta.AnnounceList) > 0 {
 		fmt.Println("Announce List:")
 		for i, tier := range meta.AnnounceList {
-			fmt.Printf("  Tier %d:\n", i)
+			fmt.Printf("  Tier %d:\n", i+1)
 			for _, tracker := range tier {
 				fmt.Printf("    - %s\n", tracker)
 			}
@@ -64,6 +64,9 @@ func printTorrentMeta(meta *torrent.TorrentMeta) {
 	fmt.Printf("Piece Count: %d\n", meta.Info.PieceCount())
 	fmt.Printf("Total Length: %d bytes\n", meta.Info.TotalLength())
 	fmt.Printf("Private: %v\n", meta.Info.Private == 1)
+
+	fmt.Printf("Info Hash: %x\n", meta.InfoHash)
+	fmt.Printf("Info Bytes Length: %d\n", len(meta.InfoBytes))
 
 	if len(meta.Info.Pieces) > 0 {
 		fmt.Printf("Raw Pieces Field Length: %d bytes\n", len(meta.Info.Pieces))

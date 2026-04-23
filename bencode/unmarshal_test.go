@@ -1,6 +1,7 @@
 package bencode
 
 import (
+	"crypto/sha1"
 	"strings"
 	"testing"
 )
@@ -68,6 +69,42 @@ func TestUnmarshalBytesField(t *testing.T) {
 
 	if string(got.Pieces) != "spam" {
 		t.Fatalf("got %q, want %q", string(got.Pieces), "spam")
+	}
+}
+
+func TestUnmarshalRawValueAndSHA1(t *testing.T) {
+	type Info struct {
+		Name        string `bencode:"name"`
+		PieceLength int    `bencode:"piece length"`
+	}
+
+	type Torrent struct {
+		Info      Info     `bencode:"info"`
+		InfoBytes []byte   `bencode:"info,raw"`
+		InfoHash  [20]byte `bencode:"info,sha1"`
+	}
+
+	rawInfo := "d4:name4:spam12:piece lengthi16384ee"
+	input := "d8:announce14:http://tracker4:info" + rawInfo + "e"
+
+	var got Torrent
+	if err := Unmarshal(strings.NewReader(input), &got); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got.Info.Name != "spam" {
+		t.Fatalf("got info.name %q, want %q", got.Info.Name, "spam")
+	}
+	if got.Info.PieceLength != 16384 {
+		t.Fatalf("got piece length %d, want %d", got.Info.PieceLength, 16384)
+	}
+	if string(got.InfoBytes) != rawInfo {
+		t.Fatalf("got raw info bytes %q, want %q", string(got.InfoBytes), rawInfo)
+	}
+
+	wantHash := sha1.Sum([]byte(rawInfo))
+	if got.InfoHash != wantHash {
+		t.Fatalf("got info hash %x, want %x", got.InfoHash, wantHash)
 	}
 }
 
