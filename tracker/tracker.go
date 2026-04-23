@@ -3,10 +3,13 @@ package tracker
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/elliota43/gotorrent/bencode"
 	"github.com/elliota43/gotorrent/torrent"
 )
 
@@ -22,8 +25,9 @@ type AnnounceRequest struct {
 }
 
 type Response struct {
-	Interval int
-	Peers    []Peer
+	Interval      int64  `bencode:"interval"`
+	Peers         any    `bencode:"peers"`
+	FailureReason string `bencode:"failure reason"`
 }
 
 type Peer struct {
@@ -74,6 +78,40 @@ func (ar AnnounceRequest) GetURL(announceURL string) (string, error) {
 	return base.String(), nil
 }
 
+func (ar AnnounceRequest) RequestPeers(announceURL string) ([]Peer, error) {
+
+	fullURL, err := ar.GetURL(announceURL)
+	if err != nil {
+		return nil, err
+	}
+
+	c := &http.Client{
+		Timeout: 15 * time.Second,
+	}
+
+	resp, err := c.Get(fullURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var trackerResp Response
+	if err := bencode.Unmarshal(resp.Body, &trackerResp); err != nil {
+		return nil, err
+	}
+
+	if trackerResp.FailureReason != "" {
+		return nil, fmt.Errorf("tracker: %s", trackerResp.FailureReason)
+	}
+
+	peers, err := parsePeers(trackerResp.Peers)
+	if err != nil {
+		return nil, err
+	}
+
+	return peers, nil
+}
+
 func buildTrackerQuery(ar AnnounceRequest) string {
 	params := []string{
 		"info_hash=" + escapeBytes(ar.InfoHash[:]),
@@ -110,4 +148,82 @@ func escapeBytes(b []byte) string {
 		}
 	}
 	return sb.String()
+}
+
+func parseCompactPeers(b []byte) ([]Peer, error) {
+	if len(b)%6 != 0 {
+		return nil, fmt.Errorf("tracker: compact peers length %d is not a multiple of 6", len(b))
+	}
+
+	peers := make([]Peer, 0, len(b)/6)
+	for i := 0; i < len(b); i += 6 {
+		ip := net.IPv4(b[i], b[i+1], b[i+2], b[i+3])
+		port := uint16(b[i+4])<<8 | uint16(b[i+5])
+
+		peers = append(peers, Peer{
+			IP:   ip,
+			Port: port,
+		})
+	}
+
+	return peers, nil
+}
+
+func parsePeers(src any) ([]Peer, error) {
+	switch peers := src.(type) {
+	case []byte:
+		return parseCompactPeers(peers)
+	case bencode.List:
+		return parsePeerList(peers)
+	case nil:
+		return nil, fmt.Errorf("tracker: missing peers in response")
+	default:
+		return nil, fmt.Errorf("tracker: unsupported peers value type %T", src)
+	}
+}
+
+func parsePeerList(list bencode.List) ([]Peer, error) {
+	peers := make([]Peer, 0, len(list))
+	for i, item := range list {
+		dict, ok := item.(bencode.Dict)
+		if !ok {
+			return nil, fmt.Errorf("tracker: peer list entry %d has type %T, want dictionary", i, item)
+		}
+
+		ipValue, ok := dict["ip"]
+		if !ok {
+			return nil, fmt.Errorf("tracker: peer list entry %d missing ip", i)
+		}
+
+		ipBytes, ok := ipValue.([]byte)
+		if !ok {
+			return nil, fmt.Errorf("tracker: peer list entry %d ip has type %T, want byte string", i, ipValue)
+		}
+
+		ip := net.ParseIP(string(ipBytes))
+		if ip == nil {
+			return nil, fmt.Errorf("tracker: peer list entry %d has invalid ip %q", i, string(ipBytes))
+		}
+
+		portValue, ok := dict["port"]
+		if !ok {
+			return nil, fmt.Errorf("tracker: peer list entry %d missing port", i)
+		}
+
+		port, ok := portValue.(int64)
+		if !ok {
+			return nil, fmt.Errorf("tracker: peer list entry %d port has type %T, want integer", i, portValue)
+		}
+
+		if port < 0 || port > 65535 {
+			return nil, fmt.Errorf("tracker: peer list entry %d port %d out of range", i, port)
+		}
+
+		peers = append(peers, Peer{
+			IP:   ip,
+			Port: uint16(port),
+		})
+	}
+
+	return peers, nil
 }

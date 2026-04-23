@@ -4,12 +4,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/elliota43/gotorrent/torrent"
+	"github.com/elliota43/gotorrent/tracker"
 )
 
 const peerID = "-GT0001-123456789012"
@@ -34,23 +33,23 @@ func main() {
 
 	printTorrentMeta(meta)
 
-	base, err := url.Parse(meta.Announce)
+	ar := tracker.NewAnnounceRequest(meta, tracker.NewPeerID(), tracker.NewPort())
+
+	fmt.Printf("Announce Request: %#v\n", ar)
+
+	peers, err := ar.RequestPeers(meta.Announce)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("request peers: %v", err)
 	}
 
-	params := url.Values{
-		"info_hash":  []string{string(meta.InfoHash[:])},
-		"peer_id":    []string{string(peerID[:])},
-		"port":       []string{strconv.Itoa(int(PORT))},
-		"uploaded":   []string{"0"},
-		"downloaded": []string{"0"},
-		"compact":    []string{"1"},
-		"left":       []string{strconv.Itoa(meta.Info.PieceLength)},
-	}
+	fmt.Printf("Received %d peers\n", len(peers))
 
-	base.RawQuery = params.Encode()
-	fmt.Println(base.String())
+	for i, p := range peers {
+		if i >= 10 {
+			break
+		}
+		fmt.Printf("  [%d] %s:%d\n", i, p.IP.String(), p.Port)
+	}
 
 }
 

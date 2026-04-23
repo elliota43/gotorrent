@@ -4,6 +4,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"net"
+
+	"github.com/elliota43/gotorrent/bencode"
 )
 
 func TestAnnounceRequest_GetURL_BuildsExpectedQuery(t *testing.T) {
@@ -223,5 +227,119 @@ func assertQueryHasPrefix(t *testing.T, query, key string) {
 
 	if !strings.Contains(query, key) {
 		t.Fatalf("query = %q, want key %q present", query, key)
+	}
+}
+
+func TestParseCompactPeers(t *testing.T) {
+	input := []byte{
+		1, 2, 3, 4, 0x1A, 0xE1, // 1.2.3.4:6881
+		5, 6, 7, 8, 0xC8, 0xD5, // 5.6.7.8:51413
+	}
+
+	peers, err := parseCompactPeers(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
+	}
+
+	if !peers[0].IP.Equal(net.IPv4(1, 2, 3, 4)) {
+		t.Fatalf("peer 0 IP = %v", peers[0].IP)
+	}
+
+	if peers[0].Port != 6881 {
+		t.Fatalf("peer 0 port = %d, want 6881", peers[0].Port)
+	}
+
+	if !peers[1].IP.Equal(net.IPv4(5, 6, 7, 8)) {
+		t.Fatalf("peer 1 IP = %v", peers[1].IP)
+	}
+
+	if peers[1].Port != 51413 {
+		t.Fatalf("peer 1 port = %d, want 51413", peers[1].Port)
+	}
+}
+
+func TestParseCompactPeers_BadLength(t *testing.T) {
+	input := []byte{1, 2, 3, 4, 5}
+
+	_, err := parseCompactPeers(input)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestParsePeers_Compact(t *testing.T) {
+	input := []byte{
+		1, 2, 3, 4, 0x1A, 0xE1, // 1.2.3.4:6881
+		5, 6, 7, 8, 0xC8, 0xD5, // 5.6.7.8:51413
+	}
+
+	peers, err := parsePeers(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
+	}
+}
+
+func TestParsePeers_DictionaryList(t *testing.T) {
+	input := bencode.List{
+		bencode.Dict{
+			"ip":      []byte("1.2.3.4"),
+			"port":    int64(6881),
+			"peer id": []byte("peer-1"),
+		},
+		bencode.Dict{
+			"ip":   []byte("2001:db8::1"),
+			"port": int64(51413),
+		},
+	}
+
+	peers, err := parsePeers(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
+	}
+
+	if !peers[0].IP.Equal(net.ParseIP("1.2.3.4")) {
+		t.Fatalf("peer 0 IP = %v", peers[0].IP)
+	}
+
+	if peers[0].Port != 6881 {
+		t.Fatalf("peer 0 port = %d, want 6881", peers[0].Port)
+	}
+
+	if !peers[1].IP.Equal(net.ParseIP("2001:db8::1")) {
+		t.Fatalf("peer 1 IP = %v", peers[1].IP)
+	}
+
+	if peers[1].Port != 51413 {
+		t.Fatalf("peer 1 port = %d, want 51413", peers[1].Port)
+	}
+}
+
+func TestTrackerResponse_UnmarshalNonCompactPeers(t *testing.T) {
+	input := "d8:intervali1800e5:peersld2:ip7:1.2.3.44:porti6881eed2:ip11:2001:db8::14:porti51413eeee"
+
+	var resp Response
+	if err := bencode.Unmarshal(strings.NewReader(input), &resp); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	peers, err := parsePeers(resp.Peers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
 	}
 }
