@@ -4,11 +4,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/elliota43/gotorrent/torrent"
 )
+
+const peerID = "-GT0001-123456789012"
+const PORT = 6881
 
 func main() {
 	if len(os.Args) < 2 {
@@ -28,6 +33,25 @@ func main() {
 	}
 
 	printTorrentMeta(meta)
+
+	base, err := url.Parse(meta.Announce)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	params := url.Values{
+		"info_hash":  []string{string(meta.InfoHash[:])},
+		"peer_id":    []string{string(peerID[:])},
+		"port":       []string{strconv.Itoa(int(PORT))},
+		"uploaded":   []string{"0"},
+		"downloaded": []string{"0"},
+		"compact":    []string{"1"},
+		"left":       []string{strconv.Itoa(meta.Info.PieceLength)},
+	}
+
+	base.RawQuery = params.Encode()
+	fmt.Println(base.String())
+
 }
 
 func printTorrentMeta(meta *torrent.TorrentMeta) {
