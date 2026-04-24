@@ -1,8 +1,10 @@
 package peer
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"net"
 )
 
 type Handshake struct {
@@ -63,4 +65,23 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 	copy(h.PeerID[:], rest[curr:curr+20])
 
 	return h, nil
+}
+
+func CompleteHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Handshake, error) {
+	hs := NewHandshake(infoHash, peerID)
+
+	if _, err := conn.Write(hs.Serialize()); err != nil {
+		return nil, err
+	}
+
+	resp, err := ReadHandshake(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	if !bytes.Equal(resp.InfoHash[:], infoHash[:]) {
+		return nil, fmt.Errorf("peer: info hash mismatch")
+	}
+
+	return resp, nil
 }

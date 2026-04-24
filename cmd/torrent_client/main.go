@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 type handshakeResult struct {
 	Index int
 	Peer  peer.Peer
+	Conn  net.Conn
 	ID    [20]byte
 	Err   error
 }
@@ -70,11 +72,11 @@ func main() {
 				}
 				return
 			}
-			defer conn.Close()
 
 			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 			hs, err := peer.CompleteHandshake(conn, meta.InfoHash, ar.PeerID)
 			if err != nil {
+				conn.Close()
 				results <- handshakeResult{
 					Index: i,
 					Peer:  p,
@@ -83,9 +85,23 @@ func main() {
 				return
 			}
 
+			_ = conn.SetDeadline(time.Time{})
+
+			_, err = conn.Write(peer.NewInterestedMessage().Serialize())
+			if err != nil {
+				conn.Close()
+				results <- handshakeResult{
+					Index: i,
+					Peer:  p,
+					Err:   fmt.Errorf("send interested failed: %w", err),
+				}
+				return
+			}
+
 			results <- handshakeResult{
 				Index: i,
 				Peer:  p,
+				Conn:  conn,
 				ID:    hs.PeerID,
 				Err:   nil,
 			}
@@ -97,14 +113,22 @@ func main() {
 		close(results)
 	}()
 
-	var successCount int
+	var sessions []*peer.PeerSession
 	for res := range results {
 		if res.Err != nil {
 			fmt.Printf("[%02d] %s -> %v\n", res.Index, res.Peer.String(), res.Err)
 			continue
 		}
 
-		successCount++
+		session := &peer.PeerSession{
+			Index:  res.Index,
+			Peer:   res.Peer,
+			Conn:   res.Conn,
+			PeerID: res.ID,
+		}
+
+		sessions = append(sessions, session)
+
 		fmt.Printf("[%02d] %s -> handshake ok, peer id = %q\n",
 			res.Index,
 			res.Peer.String(),
@@ -112,7 +136,20 @@ func main() {
 		)
 	}
 
-	fmt.Printf("successful handshakes: %d/%d\n", successCount, limit)
+	fmt.Printf("successful handshakes: %d/%d\n", len(sessions), limit)
+
+	var readWG sync.WaitGroup
+
+	for _, session := range sessions {
+		readWG.Add(1)
+
+		go func(s *peer.PeerSession) {
+			defer readWG.Done()
+			readPeerLoop(s)
+		}(session)
+	}
+
+	readWG.Wait()
 }
 
 func printTorrentMeta(meta *torrent.TorrentMeta) {
@@ -179,4 +216,47 @@ func printTorrentMeta(meta *torrent.TorrentMeta) {
 	for i, f := range meta.Info.Files {
 		fmt.Printf("  [%d] %s (%d bytes)\n", i, strings.Join(f.Path, "/"), f.Length)
 	}
+}
+
+func readPeerLoop(s *peer.PeerSession) {
+	defer s.Close()
+
+	fmt.Printf("[%02d] %s -> starting read loop\n", s.Index, s.Peer.String())
+
+	for {
+		msg, err := s.ReadMessage()
+		if err != nil {
+			fmt.Printf("[%02d] %s -> read error: %v\n", s.Index, s.Peer.String(), err)
+			return
+		}
+
+		if msg == nil {
+			fmt.Printf("[%02d] %s <- keep-alive\n", s.Index, s.Peer.String())
+			continue
+		}
+
+		fmt.Printf("[%02d] %s <- %s id=%d payload=%d bytes\n",
+			s.Index,
+			s.Peer.String(),
+			msg.Name(),
+			msg.ID,
+			len(msg.Payload),
+		)
+
+		if len(msg.Payload) > 0 {
+			fmt.Printf("[%02d] %s payload: %s\n",
+				s.Index,
+				s.Peer.String(),
+				hex.EncodeToString(firstN(msg.Payload, 64)),
+			)
+		}
+	}
+}
+
+func firstN(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+
+	return b[:n]
 }
