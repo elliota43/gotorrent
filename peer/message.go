@@ -2,8 +2,11 @@ package peer
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 )
+
+const MaxBlockSize = 16 * 1024
 
 type MessageID uint8
 
@@ -47,6 +50,45 @@ func (id MessageID) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+func NewRequestMessage(index, begin, length uint32) *Message {
+	payload := make([]byte, 12)
+
+	binary.BigEndian.PutUint32(payload[0:4], index)
+	binary.BigEndian.PutUint32(payload[4:8], begin)
+	binary.BigEndian.PutUint32(payload[8:12], length)
+
+	return &Message{
+		ID:      MsgRequest,
+		Payload: payload,
+	}
+}
+
+func ParseHavePayload(payload []byte) (int, error) {
+	if len(payload) != 4 {
+		return 0, fmt.Errorf("peer: have payload length = %d, want 4", len(payload))
+	}
+
+	return int(binary.BigEndian.Uint32(payload)), nil
+}
+
+type PieceBlock struct {
+	Index int
+	Begin int
+	Block []byte
+}
+
+func ParsePiecePayload(payload []byte) (*PieceBlock, error) {
+	if len(payload) < 8 {
+		return nil, fmt.Errorf("peer: piece payload length = %d, want at least 8", len(payload))
+	}
+
+	return &PieceBlock{
+		Index: int(binary.BigEndian.Uint32(payload[0:4])),
+		Begin: int(binary.BigEndian.Uint32(payload[4:8])),
+		Block: payload[8:],
+	}, nil
 }
 
 // Serialize serializes a message into a buffer
